@@ -1,0 +1,14 @@
+@tailwind base;
+
+@tailwind components;
+
+@tailwind utilities;
+
+body{
+	@apply bg-green-400
+}
+
+#root{
+	width: 100vw;
+	height: 100vh;
+}

@@ -1,0 +1,118 @@
+service cloud.firestore {
+  match /databases/{database}/documents {
+  	// ####### GLOBAL FUNCTIONS ########
+  	//check if auth of user
+  	function IsSignIn(){
+    	return request.auth.uid != null;
+    }
+    //check if user is pro member
+    function isPro(){
+    	return "pro" in request.auth.token && request.auth.token.pro == true;
+    }	
+    // ####### USERS ########
+    match /users/{user} {
+    	 //check inserted status is valid or not
+       function checkStatus(status){
+         return status in ["online","busy","away","offline"];
+       }
+       function FriendsNumberChange(){
+       	return  !("friendsNumber" in request.resource.data) ||  request.resource.data.friendsNumber == resource.data.friendsNumber;
+       }
+       // check if inserted user document is valid or not
+       function isUserDocGood(data , size){
+         return data.keys().hasAll(["name","picture","status"]) && data.keys().size() == size &&
+         	data.name.trim().size()>0 && data.picture.trim().size()>0 &&
+          checkStatus(data.status);
+       }
+
+       function isUserDocStillGood(data){
+       	 return FriendsNumberChange() && (
+         		resource.data.size() == data.size() ||
+         		(
+            	resource.data.size() + 1 == data.size() && 
+            	(
+              	"bio" in data.keys() && !("bio" in resource.data.keys()) &&
+              	isPro() &&
+             		data.bio.trim().size() > 0
+              )
+            )
+          ) && isUserDocGood( data , data.size()  );
+       }
+       
+       
+    	//read users only auth
+      allow read: if IsSignIn();
+      //owner who delete the document
+      allow delete: if request.auth.uid == user;
+    	//create must be valid inputs and auth user
+      allow create: if IsSignIn() && isUserDocGood(request.resource.data ,3);
+      //update required valid inputs and document owner
+      allow update: if request.auth.uid == user && isUserDocStillGood(request.resource.data);
+    }
+    
+    
+    // ######## CONVERSATION #######
+    match /conversation/{document}{
+    	//check whether document id is correspond to it's `parts` field.
+      function CheckPartsSameAsDocID(){
+      	return ( request.resource.data.parts[0] < request.resource.data.parts[1] && request.resource.data.parts.join("") ==  document ) ||
+      		 		 ( request.resource.data.parts[0] > request.resource.data.parts[1] && request.resource.data.parts[1] + request.resource.data.parts[0] ==  document);
+      }
+      //check if user exist or not
+      function isUserExist(userId){
+      	return exists(/databases/$(database)/documents/users/$(userId));
+      }
+      
+      function remainFriendsNumber(userId){
+      	return checkRemainFriendsNumber(get(/databases/$(database)/documents/users/$(userId)).data);
+      }
+      function checkRemainFriendsNumber(data){
+      		return data.friendsNumber >0
+      }
+      
+    	//create conversation. must `parts` field correspond to new document id
+      allow create : if IsSignIn()&& document.size() == 56 && request.resource.data.parts.size() == 2 && //check struture
+      	CheckPartsSameAsDocID() && //check congrunce (التطابق)
+      	request.auth.uid in request.resource.data.parts && //is parts contain the auth user
+        request.resource.data.parts[0] == request.auth.uid && isUserExist(request.resource.data.parts[1]) && // check if second part exist in users collection
+        !("snippet" in request.resource.data) && //when create a conversation it must be not actived 'snipped field not exist' until the second part apprve it, or in case of blocking user it will be disactivated all the time 
+      	(!request.resource.data.keys().hasOnly(["parts"]) || isPro()) && // in case of blocking users the user must be pro to block other users
+        (request.resource.data.keys().hasOnly(["parts"]) || remainFriendsNumber(request.auth.uid) )
+      //read. available only to included user on `parts` field
+			allow read: if IsSignIn() && request.auth.uid in resource.data.parts;
+      //update or delete if auth user included in `parts` field and document doesn't contain only `parts` which means such document not created for to block user
+      allow update: if IsSignIn() && (request.auth.uid in resource.data.parts) && 
+      	(!request.resource.data.keys().hasOnly(["parts"]) || isPro()) &&
+      	!resource.data.keys().hasOnly(["parts"]) && // check if conversation not created for blocking some user
+				("snippet" in resource.data || request.auth.uid == resource.data.parts[1]) && // check if conversation is activated or in process to be activate
+        request.resource.data.parts == resource.data.parts &&//&& //check if parts doesn't change or modified
+        ( !("snippet" in request.resource.data) || remainFriendsNumber(resource.data.parts[0]) && remainFriendsNumber(resource.data.parts[1]))
+      allow delete: if IsSignIn() && request.auth.uid in resource.data.parts && !resource.data.keys().hasOnly(["parts"]);
+      // ##### MESSAGES #### between two users
+      match /messages/{msg}{
+      
+      	//dispatch message parent which is the conversation doc to IsUserAllowed function
+        function checkIfUserAllowed(){
+				  return IsUserAllowed(get(/databases/$(database)/documents/conversation/$(document)).data);
+        }
+        
+      	// check if the auth user included and conversation contain snipped feild which indicat that convesation is valid and accepted by both parts
+      	function IsUserAllowed(data){
+          return request.auth.uid in data.parts && data.snippet >= "";
+        }
+        
+        
+        // allow create and read only for included users
+      	allow read: if IsSignIn() && checkIfUserAllowed();
+      	allow create: if IsSignIn() && checkIfUserAllowed() && 
+        	request.resource.data.keys().hasOnly(["content","time","image","receiver"]) &&
+          (!("image" in request.resource.data) || isPro());
+      }
+    }
+    
+   // ###### COUPON
+  	match /coupon/{document=**}{
+    	allow read,write: if false;
+    }
+  }
+}
